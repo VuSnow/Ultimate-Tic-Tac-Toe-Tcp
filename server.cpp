@@ -160,7 +160,7 @@ void handleLogin(json &data, int client_fd){
                 for (auto client : clients){
                     message_sent["type"] = static_cast<int>(ResponseType::ONLINEPLAYER);
                     message_sent["message"] = "online users";
-                    message_sent["users"] = onlineUser; 
+                    message_sent["online users"] = onlineUser; 
                     message = message_sent.dump();
                     send(client, message.c_str(), message.length(), 0);
                 }
@@ -223,7 +223,21 @@ void handleRegister(json &data, int client_fd){
 }
 
 void handleLogout(json &data, int client_fd){
+    std::string username = data["username"];
+    std::vector<USER> users = readAccountsFile();
 
+    std::ofstream accountsFile("accounts.txt", std::ios::trunc);
+    if (!accountsFile) {
+        std::cerr << "Failed to clear accounts file" << std::endl;
+        return;
+    }
+
+    for(USER user : users){
+        if(user.username == username){
+            user.status = "offline";
+        }
+        accountsFile << user.username << " " << user.password << " " << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+    }
 }
 
 void *clientHandler(void *arg) {

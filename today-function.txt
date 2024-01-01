@@ -1,0 +1,5 @@
+Today 31/12:
+- Log in function
+- Register function
+- View profile function
+Maybe: - Create Room and Join Room

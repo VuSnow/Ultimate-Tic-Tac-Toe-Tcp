@@ -1,3 +1,5 @@
 vmdung3602 Dung03062002 online 300 135 1
-test1 123456 offline 0 0 1
+test1 123456 online 0 0 1
 test2 123456 offline 0 0 1
+test3 123456 offline 0 0 1
+test4 123456 offline 0 0 1

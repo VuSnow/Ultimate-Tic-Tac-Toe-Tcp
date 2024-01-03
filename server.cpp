@@ -28,6 +28,7 @@ struct USER{
     std::string username;
     std::string password;
     std::string status;
+    std::string ingame;
     int wins;
     int loses;
     int elo;
@@ -93,7 +94,7 @@ std::vector<USER> readAccountsFile()
     {
         std::istringstream iss(line);
         USER user;
-        if (iss >> user.username >> user.password >> user.status >> user.wins >> user.loses >> user.isFree)
+        if (iss >> user.username >> user.password >> user.ingame >> user.status >> user.wins >> user.loses >> user.isFree)
         {
             user.elo = user.wins * 10 - user.loses * 5;
             // user.winRate = (double) user.wins / (user.wins+user.loses) * 100;
@@ -125,6 +126,16 @@ USER findUserByUsername(const std::string &username)
     return USER();
 }
 
+USER findUserByIngame(const std::string &ingame){
+    std::vector<USER> users = readAccountsFile();
+    for(const USER &user : users){
+        if(user.ingame == ingame){
+            return user;
+        }
+    }
+    return USER();
+}
+
 room findRoomByName(const std::string &roomName){
     for(const room &roomIn4 : roomList){
         if(roomIn4.name == roomName){
@@ -151,6 +162,7 @@ void updateData(){
             userJSON["elo"] = user.elo;
             userJSON["isFree"] = user.isFree;
             userJSON["win rate"] = user.winRate;
+            userJSON["ingame"] = user.ingame;
 
             onlineUserJSON.push_back(userJSON);
         }
@@ -202,6 +214,7 @@ void handleLogin(json &data, int client_fd){
                 message_sent["user"]["status"] = user.status;
                 message_sent["user"]["isFree"] = user.isFree;
                 message_sent["user"]["elo"] = user.elo;
+                message_sent["user"]["ingame"] = user.ingame;
 
                 std::ofstream accountsFile("accounts.txt", std::ios::trunc);
                 if(!accountsFile){
@@ -209,11 +222,11 @@ void handleLogin(json &data, int client_fd){
                     return;
                 }
 
-                for(auto user : users){
+                for(auto &user : users){
                     if(user.username == username){
                         user.status = "online";
                     }
-                    accountsFile << user.username << " " << user.password << " " << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+                    accountsFile << user.username << " " << user.password << " " << user.ingame << " "  << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
                 }
                 accountsFile.close();
 
@@ -235,15 +248,18 @@ void handleLogin(json &data, int client_fd){
 void handleRegister(json &data, int client_fd){
     std::string username = data["username"];
     std::string password = data["password"];
+    std::string ingame = data["ingame"];
 
     USER findUser = findUserByUsername(username);
+    USER ingame_user = findUserByIngame(ingame);
     json message_sent;
     USER newUser;
     std::vector<USER> users = readAccountsFile();
 
-    if(findUser.username.empty()){
+    if(findUser.username.empty() && ingame_user.username.empty()){
         newUser.username = username;
         newUser.password = password;
+        newUser.ingame = ingame;
         newUser.wins = 0;
         newUser.loses = 0;
         newUser.elo = 0;
@@ -258,14 +274,17 @@ void handleRegister(json &data, int client_fd){
             return;
         }
 
-        accountsFile << newUser.username << " " << newUser.password << " " << newUser.status << " " << newUser.wins << " " << newUser.loses << " " << newUser.isFree << std::endl;
+        accountsFile << newUser.username << " " << newUser.password << " " << newUser.ingame << " " << newUser.status << " " << newUser.wins << " " << newUser.loses << " " << newUser.isFree << std::endl;
         accountsFile.close();
 
         message_sent["type"] = static_cast<int>(ResponseType::REGISTER);
         message_sent["message"] = "register successfully";
-    }else{
+    }else if (!findUser.username.empty()){
         message_sent["type"] = static_cast<int>(ResponseType::REGISTER);
-        message_sent["message"] = "register fail";
+        message_sent["message"] = "existed username";
+    }else if(!ingame_user.username.empty()){
+        message_sent["type"] = static_cast<int>(ResponseType::REGISTER);
+        message_sent["message"] = "existed ingame";
     }
 
     std::string message = message_sent.dump();
@@ -286,7 +305,7 @@ void handleLogout(json &data, int client_fd){
         if(user.username == username){
             user.status = "offline";
         }
-        accountsFile << user.username << " " << user.password << " " << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+        accountsFile << user.username << " " << user.password << " " << user.ingame << " " << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
     }
     updateData();
 }
@@ -408,6 +427,8 @@ void *clientHandler(void *arg) {
             break;
         }
 
+        std::cout << "receive: " << buffer << std::endl;
+
         json jsonData = json::parse(buffer);
         int type = jsonData["type"];
         json &data = jsonData["data"];
@@ -455,7 +476,7 @@ int main() {
     }
 
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr("192.168.99.51");
+    address.sin_addr.s_addr = inet_addr("127.0.0.1");
     address.sin_port = htons(PORT);
 
     // Liên kết socket với cổng

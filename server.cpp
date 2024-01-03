@@ -41,36 +41,53 @@ enum class RequestType{
     LOGIN, 
     LOGOUT,
     REGISTER,
-    UPDATEDATA,
+    UPDATEONLINELIST,
+    UPDATEROOMSTATE,
     CREATEROOM,
     JOINROOM,
     ROOMLIST,
     READY,
     UNREADY,
     STARTGAME,
+    MOVE,
 };
 
 enum class ResponseType{
     LOGIN,
     LOGOUT,
     REGISTER,
-    UPDATEDATA,
+    UPDATEONLINELIST,
+    UPDATEROOMSTATE,
     CREATEROOM,
     JOINROOM,
     ROOMLIST,
     READY,
     UNREADY,
     STARTGAME,
+    MOVE,
 };
 
 struct room{
     std::string name;
     std::vector<USER> players;
-    int turn;
-    bool isFull = false;
     std::vector<int> client_in_room;
+    bool isFull = false;
     bool player1_ready = false;
     bool player2_ready = false;
+    bool gameStart;
+    bool isPlayerXTurn;
+    int turn;
+    int currentBoard;
+    int currentCell;
+    int nextBoard;
+    std::string board[9][9];
+    room() : isPlayerXTurn(true), player1_ready(false), player2_ready(false), gameStart(false), turn(-2), nextBoard(-1) {
+        for(int i = 0; i < 9; i++){
+            for(int j = 0; j < 9; j++){
+                board[i][j] = " ";
+            }
+        }
+    }
 };
 
 std::vector<room> roomList;
@@ -145,11 +162,10 @@ room findRoomByName(const std::string &roomName){
     return room();
 }
 
-void updateData(){
+void updateOnlineList(){
     // std::cout << data << std::endl;
     std::vector<USER> users = readAccountsFile();
     json onlineUserJSON;
-    json roomListJSON;
     json message_sent;
 
     for(USER user : users){
@@ -168,6 +184,18 @@ void updateData(){
         }
     }
 
+    message_sent["type"] = static_cast<int>(ResponseType::UPDATEONLINELIST);
+    message_sent["online user"] = onlineUserJSON;
+    // message_sent["room list"] = roomListJSON;
+    for(int client : clients){
+        send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+    }
+}
+
+void updateRoomList(){
+    json roomListJSON;
+    json message_sent;
+    
     for(room roomValue : roomList){
         std::cout << "size:" << roomValue.players.size() << std::endl;
         json roomJSON;
@@ -179,11 +207,16 @@ void updateData(){
         roomJSON["is full"] = roomValue.isFull;
         roomJSON["player1_ready"] = roomValue.player1_ready;
         roomJSON["player2_ready"] = roomValue.player2_ready;
+        roomJSON["current board"] = roomValue.currentBoard;
+        roomJSON["current cell"] = roomValue.currentCell;
+        roomJSON["next board"] = roomValue.nextBoard;
+        roomJSON["game start"] = roomValue.gameStart;
+        roomJSON["turn"] = roomValue.turn;
+        roomJSON["is player X turn"] = roomValue.isPlayerXTurn;
         roomListJSON.push_back(roomJSON);
     }
 
-    message_sent["type"] = static_cast<int>(ResponseType::UPDATEDATA);
-    message_sent["online user"] = onlineUserJSON;
+    message_sent["type"] = static_cast<int>(ResponseType::UPDATEROOMSTATE);
     message_sent["room list"] = roomListJSON;
     for(int client : clients){
         send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
@@ -242,7 +275,7 @@ void handleLogin(json &data, int client_fd){
 
     std::string message = message_sent.dump();
     send(client_fd, message.c_str(), message.length(), 0);
-    updateData();
+    updateOnlineList();
 }
 
 void handleRegister(json &data, int client_fd){
@@ -307,7 +340,7 @@ void handleLogout(json &data, int client_fd){
         }
         accountsFile << user.username << " " << user.password << " " << user.ingame << " " << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
     }
-    updateData();
+    updateOnlineList();
 }
 
 void createRoom(json &data, int client_fd){
@@ -330,7 +363,6 @@ void createRoom(json &data, int client_fd){
         message_sent["room name"] = room_name;
 
         send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
-        updateData();
         // std::cout << "room size when create: " << newRoom.players.size() << std::endl;
         // std::cout << "room list size after create: " << roomList.size() << std::endl;
     }else{
@@ -338,6 +370,7 @@ void createRoom(json &data, int client_fd){
         message_sent["message"] = "create fail";
         send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
     }
+    updateRoomList();
 }
 
 void joinRoom(json &data, int client_fd){
@@ -367,11 +400,11 @@ void joinRoom(json &data, int client_fd){
                 message_sent["message"] = "join success";
                 message_sent["room name"] = room_name;
                 send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
-                // updateData();
+                // updateOnlineList();
             }
         }
     }
-    updateData();
+    updateRoomList();
 }
 
 void handleReadyRequest(json &data, int client_fd){
@@ -391,7 +424,7 @@ void handleReadyRequest(json &data, int client_fd){
             }
         }
     }
-    updateData();
+    updateRoomList();
 }
 
 void handleUnreadyRequest(json &data, int client_fd){
@@ -411,7 +444,11 @@ void handleUnreadyRequest(json &data, int client_fd){
             }
         }
     }
-    updateData();
+    updateRoomList();
+}
+
+void handleMove(json &data, int client_fd){
+    std::cout << data << std::endl;
 }
 
 
@@ -443,12 +480,16 @@ void *clientHandler(void *arg) {
             createRoom(data, client_fd);
         }else if(type == static_cast<int>(RequestType::JOINROOM)){
             joinRoom(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::UPDATEDATA)){
-            updateData();
+        }else if(type == static_cast<int>(RequestType::UPDATEONLINELIST)){
+            // updateOnlineList();
         }else if(type == static_cast<int>(RequestType::READY)){
             handleReadyRequest(data, client_fd);
         }else if(type == static_cast<int>(RequestType::UNREADY)){
             handleUnreadyRequest(data,client_fd);
+        }else if(type == static_cast<int>(RequestType::MOVE)){
+            handleMove(data, client_fd);
+        }else if(type == static_cast<int>(RequestType::UPDATEROOMSTATE)){
+            // updateRoomList();
         }
     }
 
@@ -476,7 +517,7 @@ int main() {
     }
 
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    address.sin_addr.s_addr = inet_addr("172.31.193.100");
     address.sin_port = htons(PORT);
 
     // Liên kết socket với cổng

@@ -3,3 +3,7 @@ Today 31/12:
 - Register function
 - View profile function
 Maybe: - Create Room and Join Room
+
+=> Done
+
+- Move function

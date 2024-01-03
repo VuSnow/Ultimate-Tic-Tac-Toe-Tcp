@@ -37,10 +37,13 @@ struct USER{
     int turn;
 };
 
-enum class RequestType{
-    LOGIN, 
+enum class RequestType
+{
+    LOGIN,
     LOGOUT,
     REGISTER,
+    GETROOMLIST,
+    GETONLINEPLAYER,
     UPDATEONLINELIST,
     UPDATEROOMSTATE,
     CREATEROOM,
@@ -50,12 +53,15 @@ enum class RequestType{
     UNREADY,
     STARTGAME,
     MOVE,
+    // Add more request types as needed
 };
 
 enum class ResponseType{
     LOGIN,
     LOGOUT,
     REGISTER,
+    GETROOMLIST,
+    GETONLINEPLAYER,
     UPDATEONLINELIST,
     UPDATEROOMSTATE,
     CREATEROOM,
@@ -162,7 +168,7 @@ room findRoomByName(const std::string &roomName){
     return room();
 }
 
-void updateOnlineList(){
+void updateOnlineList(int client_fd){
     // std::cout << data << std::endl;
     std::vector<USER> users = readAccountsFile();
     json onlineUserJSON;
@@ -190,6 +196,36 @@ void updateOnlineList(){
     for(int client : clients){
         send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
     }
+}
+
+void updateOnlinePlayerList(json &data, int client_fd){
+    
+}
+
+void getOnlinePlayerList(json &data, int client_fd){
+    std::vector<USER> users = readAccountsFile();
+    json onlineUserJSON;
+    json message_sent;
+
+    for(USER user : users){
+        if(user.status == "online"){
+            json userJSON;
+            userJSON["username"] = user.username;
+            userJSON["status"] = user.status;
+            userJSON["wins"] = user.wins;
+            userJSON["losses"] = user.loses;
+            userJSON["elo"] = user.elo;
+            userJSON["isFree"] = user.isFree;
+            userJSON["win rate"] = user.winRate;
+            userJSON["ingame"] = user.ingame;
+
+            onlineUserJSON.push_back(userJSON);
+        }
+    }
+
+    message_sent["type"] = static_cast<int>(ResponseType::GETONLINEPLAYER);
+    message_sent["online user"] = onlineUserJSON;
+    send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
 }
 
 void updateRoomList(){
@@ -226,10 +262,8 @@ void updateRoomList(){
 void handleLogin(json &data, int client_fd){
     std::string username = data["username"];
     std::string password = data["password"];
-
     USER user = findUserByUsername(username);
     std::vector<USER> users = readAccountsFile();
-
     json message_sent;
 
     if(!user.username.empty()){
@@ -238,8 +272,9 @@ void handleLogin(json &data, int client_fd){
                 message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
                 message_sent["message"] = "already login";
             }else{
-                message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
-                message_sent["message"] = "login success";
+                // message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+                // message_sent["message"] = "login success";
+
                 message_sent["user"]["username"] = user.username;
                 message_sent["user"]["wins"] = user.wins;
                 message_sent["user"]["loses"] = user.loses;
@@ -263,19 +298,67 @@ void handleLogin(json &data, int client_fd){
                 }
                 accountsFile.close();
 
-            }
-        }else{
-            message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
-            message_sent["message"] = "login fail";
-        }
-    }else{
-        message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
-        message_sent["message"] = "not existed";
-    }
+                for(int client : clients){
+                    if(client == client_fd){
+                        message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+                        message_sent["message"] = "login success";
+                    }else{
+                        message_sent["type"] = static_cast<int>(ResponseType::UPDATEONLINELIST);
+                        message_sent["message"] = "add online users";
+                    }
+                    std::string message = message_sent.dump();
+                    send(client, message.c_str(), message.length(), 0);
+                }
 
-    std::string message = message_sent.dump();
-    send(client_fd, message.c_str(), message.length(), 0);
-    updateOnlineList();
+                // std::string message = message_sent.dump();
+                // send(client_fd, message.c_str(), message.length(), 0);
+            }
+        }
+    }
+    // if(!user.username.empty()){
+    //     if(user.username == username && user.password == password){
+    //         if(user.status == "online"){
+                // message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+                // message_sent["message"] = "already login";
+    //         }else{
+    //             message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+    //             message_sent["message"] = "login success";
+    //             message_sent["user"]["username"] = user.username;
+    //             message_sent["user"]["wins"] = user.wins;
+    //             message_sent["user"]["loses"] = user.loses;
+    //             message_sent["user"]["winRate"] = user.winRate;
+    //             message_sent["user"]["status"] = user.status;
+    //             message_sent["user"]["isFree"] = user.isFree;
+    //             message_sent["user"]["elo"] = user.elo;
+    //             message_sent["user"]["ingame"] = user.ingame;
+
+    //             std::ofstream accountsFile("accounts.txt", std::ios::trunc);
+    //             if(!accountsFile){
+    //                 std::cerr << "Failed to clear accounts file" << std::endl;
+    //                 return;
+    //             }
+
+    //             for(auto &user : users){
+    //                 if(user.username == username){
+    //                     user.status = "online";
+    //                 }
+    //                 accountsFile << user.username << " " << user.password << " " << user.ingame << " "  << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+    //             }
+    //             accountsFile.close();
+
+    //         }
+    //     }else{
+    //         message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+    //         message_sent["message"] = "login fail";
+    //     }
+    // }else{
+    //     message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+    //     message_sent["message"] = "not existed";
+    // }
+
+    // std::string message = message_sent.dump();
+    // send(client_fd, message.c_str(), message.length(), 0);
+    // updateOnlineList();
 }
 
 void handleRegister(json &data, int client_fd){
@@ -340,7 +423,13 @@ void handleLogout(json &data, int client_fd){
         }
         accountsFile << user.username << " " << user.password << " " << user.ingame << " " << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
     }
-    updateOnlineList();
+
+    auto it = std::find(clients.begin(), clients.end(), client_fd);
+    if(it != clients.end()){
+        clients.erase(it);
+    }
+    // updateOnlineList();
+    std::cout << clients.size() << std::endl; 
 }
 
 void createRoom(json &data, int client_fd){
@@ -451,6 +540,9 @@ void handleMove(json &data, int client_fd){
     std::cout << data << std::endl;
 }
 
+void getRoomList(json &data, int client_fd){
+
+}
 
 void *clientHandler(void *arg) {
     int client_fd = *((int *)arg);
@@ -470,27 +562,37 @@ void *clientHandler(void *arg) {
         int type = jsonData["type"];
         json &data = jsonData["data"];
 
-        if (type == static_cast<int>(RequestType::LOGIN)) {
+        if(type == static_cast<int>(RequestType::LOGIN)){
             handleLogin(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::REGISTER)){
-            handleRegister(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::LOGOUT)){
-            handleLogout(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::CREATEROOM)){
-            createRoom(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::JOINROOM)){
-            joinRoom(data, client_fd);
         }else if(type == static_cast<int>(RequestType::UPDATEONLINELIST)){
-            // updateOnlineList();
-        }else if(type == static_cast<int>(RequestType::READY)){
-            handleReadyRequest(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::UNREADY)){
-            handleUnreadyRequest(data,client_fd);
-        }else if(type == static_cast<int>(RequestType::MOVE)){
-            handleMove(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::UPDATEROOMSTATE)){
-            // updateRoomList();
+            updateOnlinePlayerList(data, client_fd);
+        }else if(type == static_cast<int>(RequestType::GETONLINEPLAYER)){
+            getOnlinePlayerList(data, client_fd);
         }
+
+        // if (type == static_cast<int>(RequestType::LOGIN)) {
+        //     handleLogin(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::REGISTER)){
+        //     handleRegister(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::LOGOUT)){
+        //     handleLogout(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::CREATEROOM)){
+        //     createRoom(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::JOINROOM)){
+        //     joinRoom(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::UPDATEONLINELIST)){
+        //     // updateOnlineList();
+        // }else if(type == static_cast<int>(RequestType::READY)){
+        //     handleReadyRequest(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::UNREADY)){
+        //     handleUnreadyRequest(data,client_fd);
+        // }else if(type == static_cast<int>(RequestType::MOVE)){
+        //     handleMove(data, client_fd);
+        // }else if(type == static_cast<int>(RequestType::UPDATEROOMSTATE)){
+        //     // updateRoomList();
+        // }else if(type == static_cast<int>(RequestType::STARTGAME)){
+            
+        // }
     }
 
     close(client_fd);

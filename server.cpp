@@ -11,12 +11,14 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <iomanip>
 #include <pthread.h>
 #include <vector>
 #include <queue>
 #include <chrono> // Include the chrono header
 #include <thread> 
 #include <mutex>
+#include <cmath>
 #include "nlohmann/json.hpp"
 #include <stdbool.h>
 #include <fstream> // Add this line
@@ -29,6 +31,7 @@ struct USER{
     std::string password;
     std::string status;
     std::string ingame;
+    int user_socket;
     int wins;
     int loses;
     int elo;
@@ -42,17 +45,20 @@ enum class RequestType
     LOGIN,
     LOGOUT,
     REGISTER,
+    UPDATEONLINEUSER,
+    GETONLINEUSER,
     GETROOMLIST,
-    GETONLINEPLAYER,
-    UPDATEONLINELIST,
     UPDATEROOMLIST,
     CREATEROOM,
     JOINROOM,
-    ROOMLIST,
     READY,
     UNREADY,
-    STARTGAME,
+    START,
     MOVE,
+    WINBOARD,
+    NEXTTURN,
+    WINGAME,
+    SURRENDER,
     // Add more request types as needed
 };
 
@@ -60,17 +66,31 @@ enum class ResponseType{
     LOGIN,
     LOGOUT,
     REGISTER,
+    UPDATEONLINEUSER,
+    GETONLINEUSER,
     GETROOMLIST,
-    GETONLINEPLAYER,
-    UPDATEONLINELIST,
     UPDATEROOMLIST,
     CREATEROOM,
     JOINROOM,
-    ROOMLIST,
     READY,
     UNREADY,
-    STARTGAME,
+    START,
     MOVE,
+    WINBOARD,
+    NEXTTURN,
+    WINGAME,
+    SURRENDER,
+};
+
+struct board{
+    std::vector<std::string> cells;
+    std::string owner;
+    board(){
+        for(int i = 0; i < 9; i++){
+            cells.push_back(" ");
+        }
+        owner = " ";
+    }
 };
 
 struct room{
@@ -83,15 +103,11 @@ struct room{
     bool gameStart;
     bool isPlayerXTurn;
     int turn;
-    int currentBoard;
-    int currentCell;
     int nextBoard;
-    std::string board[9][9];
+    std::vector<board> bigBoard;
     room() : isFull(false), isPlayerXTurn(true), player1_ready(false), player2_ready(false), gameStart(false), turn(-2), nextBoard(-1) {
         for(int i = 0; i < 9; i++){
-            for(int j = 0; j < 9; j++){
-                board[i][j] = " ";
-            }
+            bigBoard.push_back(board());
         }
     }
 };
@@ -120,13 +136,11 @@ std::vector<USER> readAccountsFile()
         if (iss >> user.username >> user.password >> user.ingame >> user.status >> user.wins >> user.loses >> user.isFree)
         {
             user.elo = user.wins * 10 - user.loses * 5;
-            // user.winRate = (double) user.wins / (user.wins+user.loses) * 100;
             if((user.wins + user.loses) == 0){
                 user.winRate = 0;
             }else{
-                user.winRate = user.wins / (user.wins + user.loses);
+                user.winRate = (double) user.wins / (user.wins + user.loses) * 100;
             }
-            // std::cout << '.' << user.username << '.' << user.password << '.' << user.elo << '.' << user.winRate << '.' << user.isFree << std::endl;
             users.push_back(user);
         }
     }
@@ -145,7 +159,6 @@ USER findUserByUsername(const std::string &username)
         }
     }
 
-    // Return a default-constructed User object if the user is not found
     return USER();
 }
 
@@ -168,12 +181,18 @@ room findRoomByName(const std::string &roomName){
     return room();
 }
 
+void sendMessageToMultipleConnections(std::vector<int> clients, json message){
+    for(int client:clients){
+        send(client, message.dump().c_str(), message.dump().length(), 0);
+    }
+}
+
 void getOnlinePlayerList(json &data, int client_fd){
     std::vector<USER> users = readAccountsFile();
     json onlineUserJSON;
     json message_sent;
 
-    for(USER user : users){
+    for(USER &user : users){
         if(user.status == "online"){
             json userJSON;
             userJSON["username"] = user.username;
@@ -189,60 +208,105 @@ void getOnlinePlayerList(json &data, int client_fd){
         }
     }
 
-    message_sent["type"] = static_cast<int>(ResponseType::GETONLINEPLAYER);
+    message_sent["type"] = static_cast<int>(ResponseType::GETONLINEUSER);
     message_sent["online user"] = onlineUserJSON;
+    message_sent["room list size"] = roomList.size();
+    send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+}
+
+void getRoomList(json &data, int client_fd){
+    json roomListJSON;
+    json message_sent;
+    
+    for(room roomValue : roomList){
+        // std::cout << "size:" << roomValue.players.size() << std::endl;
+        json roomJSON;
+        roomJSON["room name"] = roomValue.name;
+        roomJSON["player X username"] = roomValue.players[0].username;
+        if(roomValue.isFull){
+            roomJSON["player O username"] = roomValue.players[1].username;
+        }
+        roomJSON["is full"] = roomValue.isFull;
+        roomJSON["player1_ready"] = roomValue.player1_ready;
+        roomJSON["player2_ready"] = roomValue.player2_ready;
+        roomJSON["next board"] = roomValue.nextBoard;
+        roomJSON["game start"] = roomValue.gameStart;
+        roomJSON["turn"] = roomValue.turn;
+        roomJSON["is player X turn"] = roomValue.isPlayerXTurn;
+        roomListJSON.push_back(roomJSON);
+    }
+
+    message_sent["type"] = static_cast<int>(ResponseType::GETROOMLIST);
+    message_sent["room list"] = roomListJSON;
     send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
 }
 
 void handleLogin(json &data, int client_fd){
+    std::cout << data << std::endl;
     std::string username = data["username"];
     std::string password = data["password"];
     USER user = findUserByUsername(username);
     std::vector<USER> users = readAccountsFile();
-    json message_sent;
 
     if(!user.username.empty()){
         if(user.username == username && user.password == password){
             if(user.status == "online"){
+                json message_sent;
                 message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
                 message_sent["message"] = "already login";
+                send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
             }else{
+                // open account file
                 std::ofstream accountsFile("accounts.txt", std::ios::trunc);
                 if(!accountsFile){
                     std::cerr << "Failed to clear accounts file" << std::endl;
                     return;
                 }
-
-                for(auto &user : users){
+                // update user data
+                for(USER &user:users){
                     if(user.username == username){
                         user.status = "online";
+                        user.user_socket = client_fd;
                     }
                     accountsFile << user.username << " " << user.password << " " << user.ingame << " "  << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
                 }
-                accountsFile.close();
 
-                message_sent["user"]["username"] = user.username;
-                message_sent["user"]["wins"] = user.wins;
-                message_sent["user"]["loses"] = user.loses;
-                message_sent["user"]["winRate"] = user.winRate;
-                message_sent["user"]["status"] = "online";
-                message_sent["user"]["isFree"] = user.isFree;
-                message_sent["user"]["elo"] = user.elo;
-                message_sent["user"]["ingame"] = user.ingame;
+                USER updateUser = findUserByUsername(username);
+                json userJson;
+                userJson["username"] = updateUser.username;
+                userJson["status"] = updateUser.status;
+                userJson["ingame"] = updateUser.ingame;
+                userJson["wins"] = updateUser.wins;
+                userJson["loses"] = updateUser.loses;
+                userJson["elo"] = updateUser.elo;
+                userJson["is free"] = updateUser.isFree;
+                userJson["win rate"] = updateUser.winRate;
 
+                // send message to client
+                json message_sent;
                 for(int client : clients){
-                    if(client == client_fd){
+                    if(client != client_fd){
+                        message_sent["type"] = static_cast<int>(ResponseType::UPDATEONLINEUSER);
+                        message_sent["message"] = "add user to online list";
+                    }else{
                         message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
                         message_sent["message"] = "login success";
-                    }else{
-                        message_sent["type"] = static_cast<int>(ResponseType::UPDATEROOMLIST);
-                        message_sent["message"] = "add online users";
                     }
-                    std::string message = message_sent.dump();
-                    send(client, message.c_str(), message.length(), 0);
+                    message_sent["user"] = userJson;
+                    send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
                 }
             }
+        }else{
+            json message_sent;
+            message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+            message_sent["message"] = "login fail";
+            send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
         }
+    }else{
+        json message_sent;
+        message_sent["type"] = static_cast<int>(ResponseType::LOGIN);
+        message_sent["message"] = "already login";
+        send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
     }
 }
 
@@ -315,7 +379,7 @@ void handleLogout(json &data, int client_fd){
         clients.erase(it);
     }
 
-    message_sent["type"] = static_cast<int>(ResponseType::UPDATEONLINELIST);
+    // message_sent["type"] = static_cast<int>(ResponseType::UPDATEONLINELIST);
     message_sent["message"] = "delete user from online list";
     message_sent["username"] = username;
     
@@ -325,74 +389,79 @@ void handleLogout(json &data, int client_fd){
 }
 
 void createRoom(json &data, int client_fd){
+    std::cout << data << std::endl;
     std::string room_name = data["room name"];
     std::string player_X_username = data["player X username"];
     USER player_X = findUserByUsername(player_X_username);
-    json message_sent;
+    
     
     if(findRoomByName(room_name).name.empty()){
-        room newRoom;
-        newRoom.name = room_name;
-        newRoom.players.push_back(player_X);
-        newRoom.turn = 1;
-        newRoom.client_in_room.push_back(client_fd);
-        roomList.push_back(newRoom);
-        // std::cout << "size of room list when create: " << roomList.size();
-        json roomJSON;
-        roomJSON["room name"] = newRoom.name;
-        roomJSON["player X username"] = newRoom.players[0].username;
+        room *newRoom = new room();
+        newRoom->name = room_name;
+        newRoom->players.push_back(player_X);
+        newRoom->client_in_room.push_back(client_fd);
+        roomList.push_back(*newRoom);
 
-        message_sent["room infor"] = roomJSON;
-        message_sent["type"] = static_cast<int>(ResponseType::CREATEROOM);
-        message_sent["message"] = "create success";
-        send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+        json message_sent;
+        json room_data;
+        room_data["name"] = newRoom->name;
+        room_data["player X username"] = newRoom->players[0].username;
+
         for(int client : clients){
-            message_sent["type"] = static_cast<int>(ResponseType::UPDATEROOMLIST);
-            message_sent["message"] = "create room";
+            if(client == client_fd){
+                message_sent["type"] = static_cast<int>(ResponseType::CREATEROOM);
+                message_sent["message"] = "create success";
+            }else{
+                message_sent["type"] = static_cast<int>(ResponseType::UPDATEROOMLIST);
+                message_sent["message"] = "add room to room list";
+            }
+            message_sent["data"] = room_data;
             send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
         }
     }else{
+        json message_sent;
         message_sent["type"] = static_cast<int>(ResponseType::CREATEROOM);
         message_sent["message"] = "create fail";
-        send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+        send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(),0);
     }
-    
 }
 
 void joinRoom(json &data, int client_fd){
     std::string room_name = data["room name"];
     std::string player_O_username = data["player O username"];
     USER player_O = findUserByUsername(player_O_username);
-    json message_sent;
 
     if(findRoomByName(room_name).name.empty()){
-        message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
+        json message_sent;
+        message_sent["type"] = static_cast<int>(ResponseType::LOGOUT);
         message_sent["message"] = "join fail";
         send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
-        return;
-    }
+    }else{
+        for(room &value : roomList){
+            if(value.name == room_name){
+                if(value.isFull){
+                    json message_sent;
+                    message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
+                    message_sent["message"] = "full";
+                    send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+                }else{
+                    value.players.push_back(player_O);
+                    value.client_in_room.push_back(client_fd);
+                    value.isFull = true;
 
-    for(room &roomValue : roomList){
-        if(roomValue.name == room_name){
-            if(roomValue.isFull){
-                message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
-                message_sent["message"] = "full";
-                send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
-            }else{
-                roomValue.players.push_back(player_O);
-                roomValue.isFull = true;
-                roomValue.client_in_room.push_back(client_fd);
-
-                message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
-                message_sent["room name"] = room_name;
-                message_sent["user name"] = player_O_username;
-                message_sent["message"] = "join success";
-                send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
-                
-                for(int client : clients){
-                    message_sent["type"] = static_cast<int>(RequestType::UPDATEROOMLIST);
-                    message_sent["message"] = "join room";
-                    send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+                    for(int client : clients){
+                        json message_sent;
+                        message_sent["room name"] = room_name;
+                        if(client == client_fd){
+                            message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
+                            message_sent["message"] = "join success";
+                        }else{
+                            message_sent["type"] = static_cast<int>(RequestType::UPDATEROOMLIST);
+                            message_sent["message"] = "add player to room";
+                            message_sent["player O username"] = player_O_username;
+                        }
+                        send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+                    }
                 }
             }
         }
@@ -400,83 +469,306 @@ void joinRoom(json &data, int client_fd){
 }
 
 void handleReadyRequest(json &data, int client_fd){
-    std::cout << data << std::endl;
+    // std::cout << data << std::endl;
     std::string room_name = data["room_name"];
     std::string player_username = data["player_username"];
-    json message_sent;
 
-    for(room &value : roomList){
+    for(room &value :roomList){
         if(value.name == room_name){
-            if(value.players.size() == 1 && value.players[0].username == player_username){
+            if(value.players[0].username == player_username){
                 value.player1_ready = true;
-            }else if(value.isFull && value.players[0].username == player_username){
-                value.player1_ready = true;
-            }else if(value.isFull && value.players[1].username == player_username){
+            }else if(value.players[1].username == player_username){
                 value.player2_ready = true;
             }
         }
     }
-
-    message_sent["type"] = static_cast<int>(ResponseType::READY);
-    message_sent["message"] = "ready request";
-    message_sent["room name"] = room_name;
-    message_sent["player username"] = player_username;
+    
     for(int client : clients){
+        json message_sent;
+        message_sent["type"] = static_cast<int>(ResponseType::READY);
+        message_sent["room name"] = room_name;
+        message_sent["player username"] = player_username;
         send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
     }
-    // updateRoomList();
 }
 
 void handleUnreadyRequest(json &data, int client_fd){
-    std::cout << data << std::endl;
+    // std::cout << data << std::endl;
     std::string room_name = data["room_name"];
     std::string player_username = data["player_username"];
+
+    for(room &value :roomList){
+        if(value.name == room_name){
+            if(value.players[0].username == player_username){
+                value.player1_ready = false;
+            }else if(value.players[1].username == player_username){
+                value.player2_ready = false;
+            }
+        }
+    }
+
+    for(int client : clients){
+        json message_sent;
+        message_sent["type"] = static_cast<int>(ResponseType::UNREADY);
+        message_sent["room name"] = room_name;
+        message_sent["player username"] = player_username;
+        send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+    }
+}
+
+void startGame(json &data, int client_fd){
+    std::string room_name = data["room_name"];
+    std::vector users = readAccountsFile();
+    room found_room = findRoomByName(room_name);
     json message_sent;
 
-    for(room &value : roomList){
+    std::ofstream accountsFile("accounts.txt", std::ios::trunc);
+    if(!accountsFile){
+        std::cerr << "Failed to clear accounts file" << std::endl;
+        return;
+    }
+
+    for(USER &user: users){
+        if(user.username == found_room.players[0].username || user.username == found_room.players[1].username){
+            user.isFree = false;
+        }
+        accountsFile << user.username << " " << user.password << " " << user.ingame << " "  << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+    }
+
+    for(int client : clients){
+        message_sent["type"] = static_cast<int>(ResponseType::START);
+        message_sent["message"] = "room start";
+        message_sent["room name"] = room_name;
+        send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+    }
+}
+
+bool checkWinBoard(board checkBoard){
+    if(checkBoard.cells[0] != " " && checkBoard.cells[0] == checkBoard.cells[1] && checkBoard.cells[1] == checkBoard.cells[2]){
+        return true;
+    }
+    if(checkBoard.cells[3] != " " && checkBoard.cells[3] == checkBoard.cells[4] && checkBoard.cells[4] == checkBoard.cells[5]){
+        return true;
+    }
+    if(checkBoard.cells[6] != " " && checkBoard.cells[6] == checkBoard.cells[7] && checkBoard.cells[7] == checkBoard.cells[8]){
+        return true;
+    }
+    if(checkBoard.cells[0] != " " && checkBoard.cells[0] == checkBoard.cells[4] && checkBoard.cells[4] == checkBoard.cells[8]){
+        return true;
+    }
+    if(checkBoard.cells[2] != " " && checkBoard.cells[2] == checkBoard.cells[4] && checkBoard.cells[4] == checkBoard.cells[6]){
+        return true;
+    }
+    if(checkBoard.cells[0] != " " && checkBoard.cells[0] == checkBoard.cells[3] && checkBoard.cells[3] == checkBoard.cells[6]){
+        return true;
+    }
+    if(checkBoard.cells[1] != " " && checkBoard.cells[1] == checkBoard.cells[4] && checkBoard.cells[4] == checkBoard.cells[7]){
+        return true;
+    }
+    if(checkBoard.cells[2] != " " && checkBoard.cells[2] == checkBoard.cells[5] && checkBoard.cells[5] == checkBoard.cells[8]){
+        return true;
+    }
+    return false;
+}
+
+bool checkWinGame(std::vector<board> bigBoard){
+    if(bigBoard[0].owner != " " && bigBoard[0].owner == bigBoard[1].owner && bigBoard[1].owner == bigBoard[2].owner){
+        return true;
+    }
+    if(bigBoard[3].owner != " " && bigBoard[3].owner == bigBoard[4].owner && bigBoard[4].owner == bigBoard[5].owner){
+        return true;
+    }
+    if(bigBoard[6].owner != " " && bigBoard[6].owner == bigBoard[7].owner && bigBoard[7].owner == bigBoard[8].owner){
+        return true;
+    }
+    if(bigBoard[0].owner != " " && bigBoard[0].owner == bigBoard[4].owner && bigBoard[4].owner == bigBoard[8].owner){
+        return true;
+    }
+    if(bigBoard[2].owner != " " && bigBoard[2].owner == bigBoard[4].owner && bigBoard[4].owner == bigBoard[6].owner){
+        return true;
+    }
+    if(bigBoard[0].owner != " " && bigBoard[0].owner == bigBoard[3].owner && bigBoard[3].owner == bigBoard[6].owner){
+        return true;
+    }
+    if(bigBoard[1].owner != " " && bigBoard[1].owner == bigBoard[4].owner && bigBoard[4].owner == bigBoard[7].owner){
+        return true;
+    }
+    if(bigBoard[2].owner != " " && bigBoard[2].owner == bigBoard[5].owner && bigBoard[5].owner == bigBoard[8].owner){
+        return true;
+    }
+    return false;
+}
+
+bool checkFullBoard(board checkBoard){
+    for(int i = 0; i < 9; i++){
+        if(checkBoard.cells[i] == " "){
+            return false;
+        }
+    }
+    return true;
+}
+
+void handleMove(json &data, int client_fd){
+    std::cout << data << std::endl;
+    std::string room_name = data["room name"];
+    int current_board = data["current_board"];
+    int current_cell = data["current_cell"];
+
+    for(room &value: roomList){
         if(value.name == room_name){
-            if(value.players.size() == 1 && value.players[0].username == player_username){
-                value.player1_ready = false;
-            }else if(value.isFull && value.players[0].username == player_username){
-                value.player1_ready = false;
-            }else if(value.isFull && value.players[1].username == player_username){
-                value.player2_ready = false;
+            if(value.isPlayerXTurn){
+                value.bigBoard[current_board].cells[current_cell] = "X";
+            }else{
+                value.bigBoard[current_board].cells[current_cell] = "O";
+            }
+
+            if(checkWinBoard(value.bigBoard[current_board])){
+                if(value.isPlayerXTurn){
+                    value.bigBoard[current_board].owner = "X";
+                }else{
+                    value.bigBoard[current_board].owner = "O";
+                }
+                value.nextBoard = -1;
+                json winCellMessage;
+                winCellMessage["type"] = static_cast<int>(ResponseType::WINBOARD);
+                // winCellMessage["message"] = "player O win cell";
+                winCellMessage["next board"] = -1;
+                winCellMessage["room name"] = value.name;
+                winCellMessage["current board"] = current_board;
+                winCellMessage["current cell"] = current_cell;
+                sendMessageToMultipleConnections(value.client_in_room, winCellMessage);
+            }else{
+                // next turn
+                if(checkWinBoard(value.bigBoard[current_cell])){
+                    std::cout << "win board\n";
+                    value.nextBoard = -1;
+                    json winCellMessage;
+                    winCellMessage["type"] = static_cast<int>(ResponseType::WINBOARD);
+                    // winCellMessage["message"] = "player O win cell";
+                    winCellMessage["next board"] = -1;
+                    winCellMessage["room name"] = value.name;
+                    winCellMessage["current board"] = current_board;
+                    winCellMessage["current cell"] = current_cell;
+                    sendMessageToMultipleConnections(value.client_in_room, winCellMessage);
+                }else if(checkFullBoard(value.bigBoard[current_cell])){
+                    std::cout << "full board\n";
+                    value.nextBoard = -1;
+                    json winCellMessage;
+                    winCellMessage["type"] = static_cast<int>(ResponseType::WINBOARD);
+                    // winCellMessage["message"] = "player O win cell";
+                    winCellMessage["next board"] = -1;
+                    winCellMessage["room name"] = value.name;
+                    winCellMessage["current board"] = current_board;
+                    winCellMessage["current cell"] = current_cell;
+                    sendMessageToMultipleConnections(value.client_in_room, winCellMessage);
+                }else{
+                    value.nextBoard = current_cell;
+                    json nextTurnMessage;
+                    nextTurnMessage["type"] = static_cast<int>(ResponseType::NEXTTURN);
+                    nextTurnMessage["room name"] = value.name;
+                    nextTurnMessage["next board"] = current_cell;
+                    nextTurnMessage["current board"] = current_board;
+                    nextTurnMessage["current cell"] = current_cell;
+                    sendMessageToMultipleConnections(value.client_in_room, nextTurnMessage);
+                }
+            }
+
+            if(checkWinGame(value.bigBoard)){
+                // win game
+                // if win game -> send message
+                json gameOver;
+                gameOver["type"] = static_cast<int>(ResponseType::WINGAME);
+                gameOver["room name"] = room_name;
+                if(value.isPlayerXTurn){
+                    gameOver["winner"] = value.players[0].username;
+                }else{
+                    gameOver["winner"] = value.players[1].username;
+                }
+                sendMessageToMultipleConnections(value.client_in_room, gameOver);
+
+                // open account file to update user elo
+                std::vector<USER> users = readAccountsFile();
+                std::ofstream accountsFile("accounts.txt", std::ios::trunc);
+
+                if(!accountsFile){
+                    std::cerr << "Failed to clear accounts file" << std::endl;
+                    return;
+                }
+
+                if(value.isPlayerXTurn){
+                    for(USER &user: users){
+                        if(user.username == value.players[0].username){
+                            user.elo += 10;
+                            user.wins += 1;
+                        }else if(user.username == value.players[1].username){
+                            user.elo -= 5;
+                            user.loses += 1;
+                        }
+                        user.isFree = true;
+                        accountsFile << user.username << " " << user.password << " " << user.ingame << " "  << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+                    }
+                }else{
+                    for(USER &user: users){
+                        if(user.username == value.players[1].username){
+                            user.elo += 10;
+                            user.wins += 1;
+                        }else if(user.username == value.players[0].username){
+                            user.elo -= 5;
+                            user.loses += 1;
+                        }
+                        user.isFree = true;
+                        accountsFile << user.username << " " << user.password << " " << user.ingame << " "  << user.status << " " << user.wins << " " << user.loses << " " << user.isFree << std::endl;
+                    }
+                }
+                accountsFile.close();
+
+                std::vector<USER> updated_list = readAccountsFile();
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                json message_sent;
+                json list_online_updated;
+
+                message_sent["type"] = static_cast<int>(ResponseType::UPDATEONLINEUSER);
+                message_sent["message"] = "update elo";
+                for(USER &user : updated_list){
+                    json userJSON;
+                    userJSON["username"] = user.username;
+                    userJSON["elo"] = user.elo;
+                    userJSON["ingame"] = user.ingame;
+                    userJSON["status"] = user.status;
+                    userJSON["wins"] = user.wins;
+                    userJSON["loses"] = user.loses;
+                    userJSON["is free"] = user.isFree;
+                    userJSON["win rate"] = user.winRate;
+
+                    list_online_updated.push_back(userJSON);
+                }
+                message_sent["user list"] = list_online_updated;
+
+                sendMessageToMultipleConnections(clients, message_sent);
+            }
+
+            if(value.isPlayerXTurn){
+                value.isPlayerXTurn = false;
+            }else{
+                value.isPlayerXTurn = true;
+            }
+            
+            for(int i = 0; i < 9; i++){
+                for(int j = 0; j < 9; j++){
+                    if(value.bigBoard[i].cells[j] != " "){
+                        std::cout << value.bigBoard[i].cells[j] << " ";
+                    }else{
+                        std::cout << "- ";
+                    }
+                }
+                std::cout << std::endl;
             }
         }
     }
 }
 
-void handleMove(json &data, int client_fd){
-    std::cout << data << std::endl;
-}
+void handleSurrender(json &data, int client_fd){
 
-void getRoomList(json &data, int client_fd){
-    json roomListJSON;
-    json message_sent;
-    
-    for(room roomValue : roomList){
-        // std::cout << "size:" << roomValue.players.size() << std::endl;
-        json roomJSON;
-        roomJSON["room name"] = roomValue.name;
-        roomJSON["player X username"] = roomValue.players[0].username;
-        if(roomValue.isFull){
-            roomJSON["player O username"] = roomValue.players[1].username;
-        }
-        roomJSON["is full"] = roomValue.isFull;
-        roomJSON["player1_ready"] = roomValue.player1_ready;
-        roomJSON["player2_ready"] = roomValue.player2_ready;
-        roomJSON["current board"] = roomValue.currentBoard;
-        roomJSON["current cell"] = roomValue.currentCell;
-        roomJSON["next board"] = roomValue.nextBoard;
-        roomJSON["game start"] = roomValue.gameStart;
-        roomJSON["turn"] = roomValue.turn;
-        roomJSON["is player X turn"] = roomValue.isPlayerXTurn;
-        roomListJSON.push_back(roomJSON);
-    }
-
-    message_sent["type"] = static_cast<int>(ResponseType::GETROOMLIST);
-    message_sent["room list"] = roomListJSON;
-    send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
 }
 
 void *clientHandler(void *arg) {
@@ -490,8 +782,11 @@ void *clientHandler(void *arg) {
             std::cout << "Client disconnected" << std::endl;
             break;
         }
-
         std::cout << "receive: " << buffer << std::endl;
+
+        std::string request_data = buffer;
+        size_t bracePos = request_data.find_first_of('{');
+        std::string jsonSubstring = request_data.substr(bracePos);
 
         json jsonData = json::parse(buffer);
         int type = jsonData["type"];
@@ -499,24 +794,24 @@ void *clientHandler(void *arg) {
 
         if(type == static_cast<int>(RequestType::LOGIN)){
             handleLogin(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::GETONLINEPLAYER)){
+        }else if(type == static_cast<int>(RequestType::GETONLINEUSER)){
             getOnlinePlayerList(data, client_fd);
         }else if(type == static_cast<int>(RequestType::GETROOMLIST)){
             getRoomList(data, client_fd);
         }else if(type == static_cast<int>(RequestType::CREATEROOM)){
             createRoom(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::LOGOUT)){
-            handleLogout(data, client_fd);
-        }else if(type == static_cast<int>(RequestType::REGISTER)){
-            handleRegister(data, client_fd);
         }else if(type == static_cast<int>(RequestType::JOINROOM)){
             joinRoom(data, client_fd);
         }else if(type == static_cast<int>(RequestType::READY)){
             handleReadyRequest(data, client_fd);
         }else if(type == static_cast<int>(RequestType::UNREADY)){
             handleUnreadyRequest(data,client_fd);
-        }else if(type == static_cast<int>(RequestType::STARTGAME)){
-
+        }else if(type == static_cast<int>(RequestType::START)){
+            startGame(data, client_fd);
+        }else if(type == static_cast<int>(RequestType::MOVE)){
+            handleMove(data, client_fd);
+        }else if(type == static_cast<int>(RequestType::SURRENDER)){
+            handleSurrender(data, client_fd);
         }
     }
 
@@ -531,6 +826,7 @@ int main() {
     int addrlen = sizeof(address);
     char buffer[BUFFER_SIZE] = {0};
 
+    // std::cout << (double) round(135/(135+80)*100) * 100 / 100;
     // Tạo socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
@@ -544,7 +840,7 @@ int main() {
     }
 
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr("172.31.193.100");
+    address.sin_addr.s_addr = inet_addr("172.20.10.2");
     address.sin_port = htons(PORT);
 
     // Liên kết socket với cổng

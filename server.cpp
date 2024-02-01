@@ -382,23 +382,21 @@ void joinRoom(json &data, int client_fd){
                 roomValue.players.push_back(player_O);
                 roomValue.isFull = true;
                 roomValue.client_in_room.push_back(client_fd);
-                // message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
-                // message_sent["message"] = "join success";
+
                 message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
                 message_sent["room name"] = room_name;
                 message_sent["user name"] = player_O_username;
                 message_sent["message"] = "join success";
                 send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+                
                 for(int client : clients){
                     message_sent["type"] = static_cast<int>(RequestType::UPDATEROOMLIST);
                     message_sent["message"] = "join room";
                     send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
                 }
-                // updateOnlineList();
             }
         }
     }
-    // updateRoomList();
 }
 
 void handleReadyRequest(json &data, int client_fd){
@@ -446,7 +444,6 @@ void handleUnreadyRequest(json &data, int client_fd){
             }
         }
     }
-    // updateRoomList();
 }
 
 void handleMove(json &data, int client_fd){
@@ -521,30 +518,6 @@ void *clientHandler(void *arg) {
         }else if(type == static_cast<int>(RequestType::STARTGAME)){
 
         }
-
-        // if (type == static_cast<int>(RequestType::LOGIN)) {
-        //     handleLogin(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::REGISTER)){
-        //     handleRegister(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::LOGOUT)){
-        //     handleLogout(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::CREATEROOM)){
-        //     createRoom(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::JOINROOM)){
-        //     joinRoom(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::UPDATEONLINELIST)){
-        //     // updateOnlineList();
-        // }else if(type == static_cast<int>(RequestType::READY)){
-        //     handleReadyRequest(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::UNREADY)){
-        //     handleUnreadyRequest(data,client_fd);
-        // }else if(type == static_cast<int>(RequestType::MOVE)){
-        //     handleMove(data, client_fd);
-        // }else if(type == static_cast<int>(RequestType::UPDATEROOMSTATE)){
-        //     // updateRoomList();
-        // }else if(type == static_cast<int>(RequestType::STARTGAME)){
-            
-        // }
     }
 
     close(client_fd);
@@ -571,7 +544,7 @@ int main() {
     }
 
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr("192.168.99.51");
+    address.sin_addr.s_addr = inet_addr("172.31.193.100");
     address.sin_port = htons(PORT);
 
     // Liên kết socket với cổng

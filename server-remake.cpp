@@ -82,7 +82,7 @@ std::vector<USER> readAccountsFile(){
             if((user.wins + user.loses) == 0){
                 user.winRate = 0;
             }else{
-                user.winRate = (double)user.wins / (user.wins + user.loses);
+                user.winRate = (double)user.wins / (user.wins + user.loses) * 100;
             }
             users.push_back(user);
         }
@@ -303,9 +303,6 @@ void handleLogout(json &data, int client_fd){
     message_sent["username"] = username;
     sendMsgToMultipleConnections(clients, message_sent);
 
-    // for(int client : clients){
-    //     send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0); 
-    // }
 }
 
 void createRoom(json &data, int client_fd){
@@ -325,9 +322,18 @@ void createRoom(json &data, int client_fd){
         std::cout << "new_room nextboard" << newRoom.nextBoard << std::endl;
 
         message_sent["room name"] = room_name;
-        message_sent["type"] = static_cast<int>(ResponseType::CREATEROOM);
-        message_sent["message"] = "create success";
-        send(client_fd, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+        message_sent["player X username"] = newRoom.playerX.username;
+
+        for(int client: clients){
+            if(client == client_fd){
+                message_sent["type"] = static_cast<int>(ResponseType::CREATEROOM);
+                message_sent["message"] = "create success";
+            }else{
+                message_sent["type"] = static_cast<int>(RequestType::UPDATEROOMLIST);
+                message_sent["message"] = "add room to room list";
+            }
+            send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+        }
     }else{
         message_sent["type"] = static_cast<int>(ResponseType::CREATEROOM);
         message_sent["message"] = "create fail";
@@ -359,9 +365,9 @@ void joinRoom(json &data, int client_fd){
                 roomValue.playerO = player_O;
                 roomValue.isFull = true;
                 roomValue.client_in_room.push_back(client_fd);
+                json message_sent;
 
                 for(int client : clients){
-                    json message_sent;
                     message_sent["room name"] = room_name;
                     if(client == client_fd){
                         message_sent["type"] = static_cast<int>(ResponseType::JOINROOM);
@@ -372,14 +378,16 @@ void joinRoom(json &data, int client_fd){
                         message_sent["player O username"] = player_O_username;
                     }
                     send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
+                    std::cout << "numbers client: " << clients.size();
                 }
+                
             }
         }
     }
 }
 
 void handleReadyRequest(json &data, int client_fd){
-    std::string room_name = data["room name"];
+    std::string room_name = data["room_name"];
     std::string player_username = data["player_username"];
 
     for(room &value: roomList){
@@ -397,9 +405,6 @@ void handleReadyRequest(json &data, int client_fd){
     message_sent["room name"] = room_name;
     message_sent["player username"] = player_username;
     sendMsgToMultipleConnections(clients, message_sent);
-    // for(int client : clients){
-    //     send(client, message_sent.dump().c_str(), message_sent.dump().length(), 0);
-    // }
 }
 
 void handleUnreadyRequest(json &data, int client_fd){
@@ -445,8 +450,9 @@ void startGame(json &data, int client_fd){
 void handleMove(json &data, int client_fd){
     std::string room_name = data["room name"];
     int current_board = data["current_board"];
-    int current_cell = data["current cell"];
+    int current_cell = data["current_cell"];
     std::string player_username = data["player username"];
+    json message_sent;
 
     for(room &value: roomList){
         if(value.name == room_name){
@@ -466,9 +472,7 @@ void handleMove(json &data, int client_fd){
                 value.bigBoard[current_board].owner = "O";
             }
 
-            // because there is a winning board, so we must to check the winning game
             if(checkWinGame(value.bigBoard)){
-                // check winner and loser
                 std::string winner;
                 std::string loser;
                 if(value.isPlayerXTurn){
@@ -479,16 +483,12 @@ void handleMove(json &data, int client_fd){
                     loser = value.playerX.username;
                 }
 
-                // create message
-                json gameOverMsg;
-                gameOverMsg["type"] = static_cast<int>(ResponseType::WINGAME);
-                gameOverMsg["room name"] = room_name;
-                gameOverMsg["winner"] = winner;
-                gameOverMsg["loser"] = loser;
-                
-                // send msg to 2 players
-                sendMsgToMultipleConnections(clients, gameOverMsg);
-                
+                message_sent["type"] = static_cast<int>(ResponseType::WINGAME);
+                message_sent["winner"] = winner;
+                message_sent["loser"] = loser;
+                message_sent["room name"] = room_name;
+                sendMsgToMultipleConnections(clients, message_sent);
+
                 std::vector<USER> users = readAccountsFile();
                 for(USER &user: users){
                     if(user.username == winner){
@@ -504,34 +504,30 @@ void handleMove(json &data, int client_fd){
                 updateAccountsFile(users);
             }else{
                 value.nextBoard = -1;
-                json winBoardMessage;
-                winBoardMessage["type"] = static_cast<int>(ResponseType::WINBOARD);
-                winBoardMessage["next board"] = -1;
-                winBoardMessage["room name"] = value.name;
-                winBoardMessage["current board"] = current_board;
-                winBoardMessage["current cell"] = current_cell;
-                sendMsgToMultipleConnections(value.client_in_room, winBoardMessage);
+                message_sent["type"] = static_cast<int>(ResponseType::NEXTTURN);
+                message_sent["next board"] = value.nextBoard;
+                message_sent["room name"] = value.name;
+                message_sent["current board"] = current_board;
+                message_sent["current cell"] = current_cell;
+                message_sent["message"] = "board win";
+                sendMsgToMultipleConnections(clients, message_sent);
             }
         }else{
-            json message_sent;
             message_sent["room name"] = value.name;
             message_sent["current board"] = current_board;
             message_sent["current cell"] = current_cell;
+            message_sent["type"] = static_cast<int>(ResponseType::NEXTTURN);
 
-            if(checkWinBoard(value.bigBoard[current_cell])){
+            if(checkFullBoard(value.bigBoard[current_cell])){
                 value.nextBoard = -1;
-                message_sent["type"] = static_cast<int>(ResponseType::NEXTTURN);
-                message_sent["next board"] = -1;
-            }else if(checkFullBoard(value.bigBoard[current_cell])){
-                value.nextBoard = -1;
-                message_sent["type"] = static_cast<int>(ResponseType::BOARDFULL);
-                message_sent["next board"] = -1;
+                message_sent["next board"] = value.nextBoard;
+                message_sent["message"] = "board full";
             }else{
                 value.nextBoard = current_cell;
-                message_sent["type"] = static_cast<int>(ResponseType::NEXTTURN);
-                message_sent["next board"] = current_cell;
+                message_sent["next board"] = value.nextBoard;
+                message_sent["message"] = "";
             }
-            sendMsgToMultipleConnections(value.client_in_room, message_sent);
+            sendMsgToMultipleConnections(clients, message_sent);
         }
 
         if(value.isPlayerXTurn){
@@ -637,7 +633,7 @@ int main(){
     }
 
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr("172.31.193.100");
+    address.sin_addr.s_addr = inet_addr("192.168.1.6");
     address.sin_port = htons(PORT);
 
     // Liên kết socket với cổng
